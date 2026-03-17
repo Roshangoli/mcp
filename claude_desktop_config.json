@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "ecommerce-mcp": {
+      "command": "python",
+      "args": [
+        "/Users/roshangoli/Desktop/all folders/mcps/ecommerce_mcp/server.py"
+      ]
+    }
+  }
+}

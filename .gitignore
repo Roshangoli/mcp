@@ -1,0 +1,51 @@
+# Documentation (don't push to GitHub)
+docs/
+*.md
+
+# Test files (don't push to GitHub)
+tests/
+
+# Setup files (don't push to GitHub)
+setup/
+
+# Summary files (don't push to GitHub)
+PROJECT_SUMMARY.txt
+EXPANSION_SUMMARY.txt
+API_KEYS.txt
+.env.example
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environment
+venv/
+env/
+ENV/
+
+# Database (local only)
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+
+# Test results
+load_test_results.json
+
+# Logs
+*.log
