@@ -15,8 +15,7 @@ class SecurityManager:
         "get_product_details",
         "place_order",
         "track_order",
-        "get_order_history",
-        "view_orders"
+        "get_order_history"
     }
 
     ADMIN_TOOLS = {
