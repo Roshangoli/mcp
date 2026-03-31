@@ -432,6 +432,15 @@ async def search_products(args: dict) -> list[TextContent]:
         row = cursor.fetchone()
         if row:
             company_id = row['company_id']
+        else:
+            # If company name was provided but not found, return empty results
+            # to maintain tenant isolation/correctness
+            audit_logger.log_tool_call(
+                "search_products", None,
+                user_data['email'], user_data['role'],
+                args, True, f"Company '{company_name}' not found"
+            )
+            return [TextContent(type="text", text=f"No company found matching '{company_name}'")]
         conn.close()
 
     try:
