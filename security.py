@@ -72,24 +72,22 @@ class SecurityManager:
         if not api_key or not isinstance(api_key, str):
             return False, None, "Invalid or expired API key"
 
-        # Inefficient: must check all customers since salt is stored per-user
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM customers")
-        all_customers = cursor.fetchall()
-        conn.close()
+        # Fast lookup using a hash of the API key itself (without salt)
+        # This allows O(1) database lookup while still storing the actual validation hash with a salt
+        lookup_hash = self.hash_api_key(api_key, "lookup_salt_constant")
+        user = db.get_customer_by_lookup_hash(lookup_hash)
 
-        user = None
-        for customer_row in all_customers:
-            customer = dict(customer_row)
-            salt = customer.get('api_key_salt', '')
-            hashed = self.hash_api_key(api_key, salt)
+        if user:
+            # Secondary validation with per-user salt for defense-in-depth
+            salt = user.get('api_key_salt', '')
+            expected_hash = user['api_key_hash']
+            actual_hash = self.hash_api_key(api_key, salt)
 
-            if hashed == customer['api_key_hash']:
-                user = customer
+            if actual_hash == expected_hash:
                 # Add 'id' alias for 'customer_id' for backward compatibility
                 user['id'] = user['customer_id']
-                break
+            else:
+                user = None
 
         if not user:
             api_key_hash_temp = self.hash_api_key(api_key, "")

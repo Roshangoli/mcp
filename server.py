@@ -423,8 +423,16 @@ async def search_products(args: dict) -> list[TextContent]:
     company_id = None
     if company_name:
         company_name = security_manager.sanitize_string(company_name)
-        # Search for company by name (case-insensitive)
-        # We'll search all products and filter by company name in results
+        # Search for company by name to get its ID for better DB filtering
+        # (Though we still filter in-memory for cases where name is slightly different,
+        # providing it to DB improves performance and isolation)
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT company_id FROM companies WHERE name LIKE ?", (f"%{company_name}%",))
+        row = cursor.fetchone()
+        if row:
+            company_id = row['company_id']
+        conn.close()
 
     try:
         # Search products
@@ -607,6 +615,17 @@ async def place_order(args: dict) -> list[TextContent]:
         # Calculate total price
         total_price = product['price'] * quantity
 
+        # Atomic stock decrement
+        success_stock = db.decrement_product_stock_atomic(product_id, product['company_id'], quantity)
+        if not success_stock:
+            result = "Error: Stock level changed. Please try again."
+            audit_logger.log_tool_call(
+                "place_order", user_data['company_id'],
+                user_data['email'], user_data['role'],
+                args, False, None, result
+            )
+            return [TextContent(type="text", text=result)]
+
         # Create order using authenticated user's customer_id
         order_id = db.create_order(
             company_id=product['company_id'],
@@ -616,9 +635,8 @@ async def place_order(args: dict) -> list[TextContent]:
             total_price=total_price
         )
 
-        # Update stock
-        new_stock = product['stock'] - quantity
-        db.update_product_stock(product_id, product['company_id'], new_stock)
+        # Get updated product info for stock display
+        updated_product = db.get_product_by_id(product_id)
 
         # Format result
         result = f"""
@@ -633,7 +651,7 @@ Total Price: ${total_price:.2f}
 Status: pending
 
 Your order has been placed and is being processed.
-Remaining stock: {new_stock}
+Remaining stock: {updated_product['stock']}
 """
 
         # Audit log
@@ -677,7 +695,7 @@ async def track_order(args: dict) -> list[TextContent]:
         return [TextContent(type="text", text=error_msg)]
 
     try:
-        # Get order (no company filter - users can track orders from any company they have access to)
+        # Get order
         order = db.get_order_by_id(order_id)
 
         if not order:
@@ -688,6 +706,30 @@ async def track_order(args: dict) -> list[TextContent]:
                 args, False, None, result
             )
             return [TextContent(type="text", text=result)]
+
+        # SECURITY FIX: Ensure customers can only track their own orders
+        # Admins can track any order in their company
+        if user_data['role'] != security_manager.ROLE_ADMIN:
+            if order['customer_id'] != user_data['id']:
+                result = "Access denied: You can only track your own orders."
+                audit_logger.log_authorization_failure(
+                    "track_order", user_data['email'], user_data['role'], result
+                )
+                db.create_security_alert(
+                    alert_type="unauthorized_order_access",
+                    severity=security_manager.SEVERITY_HIGH,
+                    api_key_hash=user_data['api_key_hash'],
+                    user_email=user_data['email'],
+                    company_id=user_data.get('company_id'),
+                    attempted_action="track_order",
+                    reason=f"User tried to track order {order_id} belonging to another customer"
+                )
+                return [TextContent(type="text", text=result)]
+        else:
+            # Admin role: ensure order belongs to their company
+            if order['company_id'] != user_data['company_id']:
+                result = "Access denied: You can only track orders from your own company."
+                return [TextContent(type="text", text=result)]
 
         # Format result
         result = f"""
@@ -742,8 +784,18 @@ async def get_order_history(args: dict) -> list[TextContent]:
         )
         return [TextContent(type="text", text=msg)]
 
+    # SECURITY FIX: Ensure customers can only view their own history
+    if user_data['role'] != security_manager.ROLE_ADMIN:
+        if customer_email.lower() != user_data['email'].lower():
+            result = "Access denied: You can only view your own order history."
+            audit_logger.log_authorization_failure(
+                "get_order_history", user_data['email'], user_data['role'], result
+            )
+            return [TextContent(type="text", text=result)]
+
     try:
         # Get customer orders for the user's company
+        # (Global customers will be handled by a change in db.get_customer_orders later or by checking all companies)
         orders = db.get_customer_orders(user_data['company_id'], customer_email)
 
         if not orders:
@@ -1213,6 +1265,7 @@ async def rotate_api_key(args: dict) -> list[TextContent]:
         # Hash with new salt
         new_salt = security_manager.generate_salt()
         new_hash = security_manager.hash_api_key(new_api_key, new_salt)
+        new_lookup_hash = security_manager.hash_api_key(new_api_key, "lookup_salt_constant")
 
         # Set new expiry based on role
         from datetime import datetime, timedelta
@@ -1226,6 +1279,7 @@ async def rotate_api_key(args: dict) -> list[TextContent]:
             customer['customer_id'],
             new_hash,
             new_salt,
+            new_lookup_hash,
             new_expiry
         )
 
