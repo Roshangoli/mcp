@@ -2,9 +2,6 @@
 docs/
 *.md
 
-# Test files (don't push to GitHub)
-tests/
-
 # Setup files (don't push to GitHub)
 setup/
 
