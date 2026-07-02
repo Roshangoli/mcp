@@ -1,0 +1,21 @@
+# E-commerce MCP Server - Development Dependencies
+# Install with: pip install -r requirements-dev.txt
+
+# First install runtime dependencies
+-r requirements.txt
+
+# Testing framework
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Code formatting
+black>=23.0.0
+
+# Code linting
+flake8>=6.0.0
+
+# Type checking (optional but recommended)
+mypy>=1.0.0
+
+# Pre-commit hooks (optional but recommended)
+pre-commit>=3.0.0

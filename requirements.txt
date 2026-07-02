@@ -1,1 +1,12 @@
-mcp>=1.0.0
+# E-commerce MCP Server - Runtime Dependencies
+# Requires Python >=3.10
+
+# MCP SDK - Model Context Protocol server framework
+mcp==1.28.1
+
+# Note: All other dependencies are Python built-in modules:
+# - sqlite3 (database)
+# - hashlib (password hashing)
+# - secrets (API key generation)
+# - asyncio (async support)
+# - json, re, os, datetime, typing
