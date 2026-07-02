@@ -16,8 +16,13 @@ class AuditLogger:
         sanitized_params = self._sanitize_params(input_params)
         params_json = json.dumps(sanitized_params)
 
+        # Redact secrets from result if necessary
+        result_text = ""
         if error:
             result_text = f"ERROR: {error}"
+        elif tool_name == "rotate_api_key" and isinstance(result, str):
+            # Special case: Mask the new API key in logs
+            result_text = "API key rotated successfully (new key redacted from logs)"
         elif isinstance(result, str):
             result_text = result[:500]  # Limit length
         elif isinstance(result, dict):

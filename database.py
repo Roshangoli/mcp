@@ -58,6 +58,7 @@ class Database:
                 role TEXT NOT NULL CHECK(role IN ('customer', 'admin', 'global_customer')),
                 api_key_hash TEXT NOT NULL UNIQUE,
                 api_key_salt TEXT NOT NULL,
+                api_key_lookup_hash TEXT NOT NULL UNIQUE,
                 expires_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (company_id) REFERENCES companies(company_id)
@@ -68,6 +69,11 @@ class Database:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_customers_email
             ON customers(email, company_id)
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_customers_lookup_hash
+            ON customers(api_key_lookup_hash)
         """)
 
         # Orders table
@@ -176,22 +182,34 @@ class Database:
 
     def create_customer(self, company_id: Optional[int], name: str, email: str,
                        role: str, api_key_hash: str, api_key_salt: str,
-                       expires_at: Optional[str] = None) -> int:
+                       api_key_lookup_hash: str, expires_at: Optional[str] = None) -> int:
         """Create a new customer (supports global customers with company_id=NULL)"""
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            """INSERT INTO customers (company_id, name, email, role, api_key_hash, api_key_salt, expires_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (company_id, name, email, role, api_key_hash, api_key_salt, expires_at)
+            """INSERT INTO customers (company_id, name, email, role, api_key_hash, api_key_salt, api_key_lookup_hash, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (company_id, name, email, role, api_key_hash, api_key_salt, api_key_lookup_hash, expires_at)
         )
         customer_id = cursor.lastrowid
         conn.commit()
         conn.close()
         return customer_id
 
+    def get_customer_by_lookup_hash(self, lookup_hash: str) -> Optional[Dict[str, Any]]:
+        """Get customer by API key lookup hash (fast O(1) lookup)"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM customers WHERE api_key_lookup_hash = ?",
+            (lookup_hash,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
     def get_customer_by_api_key(self, api_key_hash: str) -> Optional[Dict[str, Any]]:
-        """Get customer by API key hash with company isolation"""
+        """Get customer by API key hash"""
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute(
@@ -315,6 +333,23 @@ class Database:
         conn.close()
         return affected > 0
 
+    def decrement_product_stock_atomic(self, product_id: int, company_id: int,
+                                      quantity: int) -> bool:
+        """Atomic stock decrement to prevent race conditions"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        # Atomic update: only decrement if enough stock exists
+        cursor.execute(
+            """UPDATE products
+               SET stock = stock - ?
+               WHERE product_id = ? AND company_id = ? AND stock >= ?""",
+            (quantity, product_id, company_id, quantity)
+        )
+        affected = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return affected > 0
+
     def get_low_stock_products(self, company_id: int, threshold: int = 10) -> List[Dict[str, Any]]:
         """Get products with low stock for a company"""
         conn = self.get_connection()
@@ -380,21 +415,34 @@ class Database:
         conn.close()
         return dict(row) if row else None
 
-    def get_customer_orders(self, company_id: int, customer_email: str,
+    def get_customer_orders(self, company_id: Optional[int], customer_email: str,
                            limit: int = 50) -> List[Dict[str, Any]]:
         """Get all orders for a customer with company isolation"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            """SELECT o.*, p.name as product_name, p.price as unit_price
-               FROM orders o
-               JOIN customers c ON o.customer_id = c.customer_id
-               JOIN products p ON o.product_id = p.product_id
-               WHERE o.company_id = ? AND c.email = ?
-               ORDER BY o.created_at DESC
-               LIMIT ?""",
-            (company_id, customer_email, limit)
-        )
+        if company_id is not None:
+            cursor.execute(
+                """SELECT o.*, p.name as product_name, p.price as unit_price
+                   FROM orders o
+                   JOIN customers c ON o.customer_id = c.customer_id
+                   JOIN products p ON o.product_id = p.product_id
+                   WHERE o.company_id = ? AND c.email = ?
+                   ORDER BY o.created_at DESC
+                   LIMIT ?""",
+                (company_id, customer_email, limit)
+            )
+        else:
+            # Global customer case: Search across all companies
+            cursor.execute(
+                """SELECT o.*, p.name as product_name, p.price as unit_price
+                   FROM orders o
+                   JOIN customers c ON o.customer_id = c.customer_id
+                   JOIN products p ON o.product_id = p.product_id
+                   WHERE c.email = ?
+                   ORDER BY o.created_at DESC
+                   LIMIT ?""",
+                (customer_email, limit)
+            )
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
@@ -659,15 +707,16 @@ class Database:
     # ==================== CUSTOMER UPDATE OPERATIONS ====================
 
     def update_customer_api_key(self, customer_id: int, new_api_key_hash: str,
-                               new_api_key_salt: str, new_expires_at: Optional[str] = None) -> bool:
+                               new_api_key_salt: str, new_api_key_lookup_hash: str,
+                               new_expires_at: Optional[str] = None) -> bool:
         """Update customer API key (for key rotation)"""
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute(
             """UPDATE customers
-               SET api_key_hash = ?, api_key_salt = ?, expires_at = ?
+               SET api_key_hash = ?, api_key_salt = ?, api_key_lookup_hash = ?, expires_at = ?
                WHERE customer_id = ?""",
-            (new_api_key_hash, new_api_key_salt, new_expires_at, customer_id)
+            (new_api_key_hash, new_api_key_salt, new_api_key_lookup_hash, new_expires_at, customer_id)
         )
         affected = cursor.rowcount
         conn.commit()
