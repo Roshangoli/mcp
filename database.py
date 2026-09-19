@@ -86,6 +86,7 @@ class Database:
                 quantity INTEGER NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
                 total_price REAL NOT NULL,
+                certificate_id TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (company_id) REFERENCES companies(company_id),
                 FOREIGN KEY (customer_id) REFERENCES customers(customer_id),
@@ -147,6 +148,49 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_security_alerts_company
             ON security_alerts(company_id, timestamp DESC)
         """)
+
+        # Intent certificates table (Layer 0 - Paper 2)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS intent_certificates (
+                certificate_id TEXT PRIMARY KEY,
+                customer_id INTEGER NOT NULL,
+                intent_classes TEXT NOT NULL,
+                item_bounds TEXT,
+                spend_limit REAL,
+                tenant_scope TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP NOT NULL,
+                signature TEXT NOT NULL,
+                is_active INTEGER DEFAULT 1,
+                is_completed INTEGER DEFAULT 0,
+                call_count INTEGER DEFAULT 0,
+                request_embedding_compressed BLOB,
+                user_request_text TEXT,
+                FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+            )
+        """)
+
+        # Indexes for fast lookup
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_intent_certificates_customer
+            ON intent_certificates(customer_id, is_active)
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_intent_certificates_expiry
+            ON intent_certificates(is_active, expires_at)
+        """)
+
+        # Migration: Add certificate_id column to orders table if it doesn't exist
+        # This handles existing databases that were created before Layer 0 implementation
+        try:
+            cursor.execute("PRAGMA table_info(orders)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if 'certificate_id' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN certificate_id TEXT")
+        except Exception:
+            # If migration fails, it's likely the column already exists or table doesn't exist yet
+            pass
 
         conn.commit()
         conn.close()
@@ -263,6 +307,9 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
 
+        # Layer 10: Result limiting - cap at 50 to prevent DoS
+        limit = min(limit, 50)
+
         sql = """
             SELECT p.*, c.name as company_name
             FROM products p
@@ -367,14 +414,14 @@ class Database:
     # ==================== ORDER OPERATIONS ====================
 
     def create_order(self, company_id: int, customer_id: int, product_id: int,
-                    quantity: int, total_price: float) -> int:
-        """Create a new order with company isolation"""
+                    quantity: int, total_price: float, certificate_id: Optional[str] = None) -> int:
+        """Create a new order with company isolation (Layer 0: optional certificate_id)"""
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            """INSERT INTO orders (company_id, customer_id, product_id, quantity, total_price, status)
-               VALUES (?, ?, ?, ?, ?, 'pending')""",
-            (company_id, customer_id, product_id, quantity, total_price)
+            """INSERT INTO orders (company_id, customer_id, product_id, quantity, total_price, status, certificate_id)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
+            (company_id, customer_id, product_id, quantity, total_price, certificate_id)
         )
         order_id = cursor.lastrowid
         conn.commit()
@@ -415,33 +462,66 @@ class Database:
         conn.close()
         return dict(row) if row else None
 
-    def get_customer_orders(self, company_id: Optional[int], customer_email: str,
+    def get_customer_orders(self, customer_id: Optional[int] = None,
+                           customer_email: Optional[str] = None,
+                           company_id: Optional[int] = None,
                            limit: int = 50) -> List[Dict[str, Any]]:
-        """Get all orders for a customer with company isolation"""
+        """Get all orders for a customer using customer_id or customer_email
+
+        Args:
+            customer_id: Customer ID (preferred method)
+            customer_email: Customer email (for backward compatibility, looks up customer_id)
+            company_id: Optional company filter
+            limit: Maximum number of orders to return
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
+
+        # If customer_email provided but not customer_id, look up the customer_id
+        if customer_id is None and customer_email is not None:
+            if company_id is not None:
+                # Look up customer by email AND company_id for security
+                cursor.execute(
+                    "SELECT customer_id FROM customers WHERE email = ? AND company_id = ?",
+                    (customer_email, company_id)
+                )
+            else:
+                # Global customer: lookup without company_id filter
+                cursor.execute(
+                    "SELECT customer_id FROM customers WHERE email = ?",
+                    (customer_email,)
+                )
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                return []
+            customer_id = row['customer_id']
+
+        if customer_id is None:
+            conn.close()
+            return []
+
         if company_id is not None:
+            # Regular customer: filter by customer_id AND company_id for defense-in-depth
             cursor.execute(
                 """SELECT o.*, p.name as product_name, p.price as unit_price
                    FROM orders o
-                   JOIN customers c ON o.customer_id = c.customer_id
                    JOIN products p ON o.product_id = p.product_id
-                   WHERE o.company_id = ? AND c.email = ?
+                   WHERE o.customer_id = ? AND o.company_id = ?
                    ORDER BY o.created_at DESC
                    LIMIT ?""",
-                (company_id, customer_email, limit)
+                (customer_id, company_id, limit)
             )
         else:
-            # Global customer case: Search across all companies
+            # Global customer case: filter by customer_id only (can see orders across all companies)
             cursor.execute(
                 """SELECT o.*, p.name as product_name, p.price as unit_price
                    FROM orders o
-                   JOIN customers c ON o.customer_id = c.customer_id
                    JOIN products p ON o.product_id = p.product_id
-                   WHERE c.email = ?
+                   WHERE o.customer_id = ?
                    ORDER BY o.created_at DESC
                    LIMIT ?""",
-                (customer_email, limit)
+                (customer_id, limit)
             )
         rows = cursor.fetchall()
         conn.close()
@@ -734,3 +814,188 @@ class Database:
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else None
+
+    # ==================== INTENT CERTIFICATE OPERATIONS (Layer 0 - Paper 2) ====================
+
+    def create_intent_certificate(
+        self,
+        certificate_id: str,
+        customer_id: int,
+        intent_classes: str,
+        item_bounds: Optional[str],
+        spend_limit: Optional[float],
+        tenant_scope: str,
+        created_at: str,
+        expires_at: str,
+        signature: str,
+        request_embedding_compressed: Optional[bytes] = None,
+        user_request_text: Optional[str] = None
+    ) -> str:
+        """
+        Create a new intent certificate for Layer 0 authorization.
+
+        Args:
+            certificate_id: UUID v4 string
+            customer_id: FK to customers table
+            intent_classes: JSON array string of intent classes
+            item_bounds: JSON array string of item keywords (can be None)
+            spend_limit: Dollar amount limit for orders (can be None)
+            tenant_scope: "ALL" or comma-separated company IDs
+            created_at: ISO format timestamp (when certificate was created)
+            expires_at: ISO format timestamp (created_at + 5 minutes)
+            signature: HMAC-SHA256 hex signature
+            request_embedding_compressed: TurboQuant-compressed embedding (Paper 3 - NEW)
+            user_request_text: Original user request text for similarity detection (Paper 3 - NEW)
+
+        Returns:
+            certificate_id
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """INSERT INTO intent_certificates
+            (certificate_id, customer_id, intent_classes, item_bounds, spend_limit,
+             tenant_scope, created_at, expires_at, signature, is_active, is_completed, call_count,
+             request_embedding_compressed, user_request_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?)""",
+            (certificate_id, customer_id, intent_classes, item_bounds, spend_limit,
+             tenant_scope, created_at, expires_at, signature, request_embedding_compressed, user_request_text)
+        )
+
+        conn.commit()
+        conn.close()
+
+        return certificate_id
+
+    def get_intent_certificate(self, certificate_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get intent certificate by ID.
+
+        Args:
+            certificate_id: UUID string
+
+        Returns:
+            Certificate dict or None if not found
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT * FROM intent_certificates WHERE certificate_id = ?",
+            (certificate_id,)
+        )
+
+        row = cursor.fetchone()
+        conn.close()
+
+        return dict(row) if row else None
+
+    def increment_certificate_call_count(self, certificate_id: str) -> int:
+        """
+        Increment the call_count for a certificate (tracks usage).
+
+        Args:
+            certificate_id: UUID string
+
+        Returns:
+            New call_count value
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "UPDATE intent_certificates SET call_count = call_count + 1 WHERE certificate_id = ?",
+            (certificate_id,)
+        )
+
+        cursor.execute(
+            "SELECT call_count FROM intent_certificates WHERE certificate_id = ?",
+            (certificate_id,)
+        )
+
+        row = cursor.fetchone()
+        new_count = row['call_count'] if row else 0
+
+        conn.commit()
+        conn.close()
+
+        return new_count
+
+    def mark_certificate_completed(self, certificate_id: str) -> None:
+        """
+        Mark a certificate as completed (is_completed = 1).
+
+        This is called when place_order succeeds, preventing certificate reuse
+        after the primary action completes.
+
+        Args:
+            certificate_id: UUID string
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "UPDATE intent_certificates SET is_completed = 1 WHERE certificate_id = ?",
+            (certificate_id,)
+        )
+
+        conn.commit()
+        conn.close()
+
+    def cleanup_expired_certificates(self, hours_old: int = 24) -> int:
+        """
+        Clean up expired certificates older than specified hours.
+
+        Similar to cleanup_old_rate_limits(), this prevents unbounded growth
+        of the intent_certificates table.
+
+        Args:
+            hours_old: Delete certificates expired more than this many hours ago
+
+        Returns:
+            Number of certificates deleted
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """DELETE FROM intent_certificates
+            WHERE datetime(expires_at) < datetime('now', '-' || ? || ' hours')""",
+            (hours_old,)
+        )
+
+        deleted_count = cursor.rowcount
+
+        conn.commit()
+        conn.close()
+
+        return deleted_count
+
+    def get_orders_by_certificate(self, certificate_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all orders associated with a certificate (for cumulative spend tracking).
+
+        Args:
+            certificate_id: UUID string
+
+        Returns:
+            List of order dicts
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """SELECT o.*, p.name as product_name, c.name as company_name
+            FROM orders o
+            JOIN products p ON o.product_id = p.product_id
+            JOIN companies c ON o.company_id = c.company_id
+            WHERE o.certificate_id = ?
+            ORDER BY o.created_at DESC""",
+            (certificate_id,)
+        )
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [dict(row) for row in rows]

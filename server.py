@@ -7,11 +7,13 @@ from mcp.types import Tool, TextContent
 from database import Database
 from security import security_manager
 from logger import create_audit_logger
+from intent import IntentMiddleware, scan_tool_result, IntentDriftWarning
 
 import os as _os
 DB_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "ecommerce.db")
 db = Database(DB_PATH)
 audit_logger = create_audit_logger(db)
+intent_middleware = IntentMiddleware(db, audit_logger)
 app = Server("multi-company-ecommerce-gateway")
 
 def authenticate_and_authorize(api_key: str, tool_name: str) -> tuple:
@@ -80,6 +82,10 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "User's API key for authentication"
                     },
+                    "certificate_id": {
+                        "type": "string",
+                        "description": "Intent certificate ID for Layer 0 authorization"
+                    },
                     "query": {
                         "type": "string",
                         "description": "Search query (searches in product name, description, category)"
@@ -112,6 +118,10 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "User's API key for authentication"
                     },
+                    "certificate_id": {
+                        "type": "string",
+                        "description": "Intent certificate ID for Layer 0 authorization"
+                    },
                     "product_id": {
                         "type": "integer",
                         "description": "Product ID to retrieve details for"
@@ -133,6 +143,10 @@ async def list_tools() -> list[Tool]:
                     "api_key": {
                         "type": "string",
                         "description": "User's API key for authentication"
+                    },
+                    "certificate_id": {
+                        "type": "string",
+                        "description": "Intent certificate ID for Layer 0 authorization"
                     },
                     "product_id": {
                         "type": "integer",
@@ -158,6 +172,10 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "User's API key for authentication"
                     },
+                    "certificate_id": {
+                        "type": "string",
+                        "description": "Intent certificate ID for Layer 0 authorization"
+                    },
                     "order_id": {
                         "type": "integer",
                         "description": "Order ID to track"
@@ -178,6 +196,10 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "User's API key for authentication"
                     },
+                    "certificate_id": {
+                        "type": "string",
+                        "description": "Intent certificate ID for Layer 0 authorization"
+                    },
                     "customer_email": {
                         "type": "string",
                         "description": "Email of the customer to get order history for"
@@ -197,6 +219,10 @@ async def list_tools() -> list[Tool]:
                     "api_key": {
                         "type": "string",
                         "description": "Admin's API key for authentication"
+                    },
+                    "certificate_id": {
+                        "type": "string",
+                        "description": "Intent certificate ID for Layer 0 authorization"
                     },
                     "name": {
                         "type": "string",
@@ -234,6 +260,10 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Admin's API key for authentication"
                     },
+                    "certificate_id": {
+                        "type": "string",
+                        "description": "Intent certificate ID for Layer 0 authorization"
+                    },
                     "product_id": {
                         "type": "integer",
                         "description": "Product ID to update"
@@ -259,6 +289,10 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Admin's API key for authentication"
                     },
+                    "certificate_id": {
+                        "type": "string",
+                        "description": "Intent certificate ID for Layer 0 authorization"
+                    },
                     "status": {
                         "type": "string",
                         "description": "Optional: Filter by order status (pending/processing/shipped/delivered/cancelled)"
@@ -279,6 +313,10 @@ async def list_tools() -> list[Tool]:
                     "api_key": {
                         "type": "string",
                         "description": "Admin's API key for authentication"
+                    },
+                    "certificate_id": {
+                        "type": "string",
+                        "description": "Intent certificate ID for Layer 0 authorization"
                     },
                     "order_id": {
                         "type": "integer",
@@ -304,6 +342,10 @@ async def list_tools() -> list[Tool]:
                     "api_key": {
                         "type": "string",
                         "description": "Admin's API key for authentication"
+                    },
+                    "certificate_id": {
+                        "type": "string",
+                        "description": "Intent certificate ID for Layer 0 authorization"
                     }
                 },
                 "required": ["api_key"]
@@ -321,6 +363,10 @@ async def list_tools() -> list[Tool]:
                     "api_key": {
                         "type": "string",
                         "description": "Admin's API key for authentication"
+                    },
+                    "certificate_id": {
+                        "type": "string",
+                        "description": "Intent certificate ID for Layer 0 authorization"
                     },
                     "customer_email": {
                         "type": "string",
@@ -342,6 +388,10 @@ async def list_tools() -> list[Tool]:
                     "api_key": {
                         "type": "string",
                         "description": "Admin's API key for authentication"
+                    },
+                    "certificate_id": {
+                        "type": "string",
+                        "description": "Intent certificate ID for Layer 0 authorization"
                     },
                     "limit": {
                         "type": "integer",
@@ -400,6 +450,13 @@ async def search_products(args: dict) -> list[TextContent]:
     company_name = args.get("company")
     max_price = args.get("max_price")
     category = args.get("category")
+    certificate_id = args.get("certificate_id", "")
+
+    # Layer 0: Intent-based authorization (runs BEFORE Layer 1)
+    try:
+        await intent_middleware.before_tool_call("search_products", args, certificate_id, api_key)
+    except IntentDriftWarning:
+        pass  # Log warning but continue
 
     # Authenticate and authorize
     success, user_data, error_msg = authenticate_and_authorize(api_key, "search_products")
@@ -452,9 +509,9 @@ async def search_products(args: dict) -> list[TextContent]:
             category=category
         )
 
-        # Filter by company name if specified
-        if company_name:
-            products = [p for p in products if p['company_name'].lower() == company_name.lower()]
+        # No need to filter by company_name again - database query already filtered by company_id
+        # which was looked up from the partial company_name match above (lines 431-434)
+        # Removing the exact-match filter allows partial company name searches to work correctly
 
         if not products:
             result = f"No products found matching '{query}'"
@@ -501,6 +558,13 @@ async def get_product_details(args: dict) -> list[TextContent]:
     """Get detailed information about a product"""
     api_key = args.get("api_key", "")
     product_id = args.get("product_id")
+    certificate_id = args.get("certificate_id", "")
+
+    # Layer 0: Intent-based authorization (runs BEFORE Layer 1)
+    try:
+        await intent_middleware.before_tool_call("get_product_details", args, certificate_id, api_key)
+    except IntentDriftWarning:
+        pass  # Log warning but continue
 
     # Authenticate and authorize
     success, user_data, error_msg = authenticate_and_authorize(api_key, "get_product_details")
@@ -568,6 +632,13 @@ async def place_order(args: dict) -> list[TextContent]:
     api_key = args.get("api_key", "")
     product_id = args.get("product_id")
     quantity = args.get("quantity")
+    certificate_id = args.get("certificate_id", "")
+
+    # Layer 0: Intent-based authorization (runs BEFORE Layer 1)
+    try:
+        await intent_middleware.before_tool_call("place_order", args, certificate_id, api_key)
+    except IntentDriftWarning:
+        pass  # Log warning but continue
 
     # Authenticate and authorize
     success, user_data, error_msg = authenticate_and_authorize(api_key, "place_order")
@@ -686,6 +757,13 @@ async def track_order(args: dict) -> list[TextContent]:
     """Track an order by ID"""
     api_key = args.get("api_key", "")
     order_id = args.get("order_id")
+    certificate_id = args.get("certificate_id", "")
+
+    # Layer 0: Intent-based authorization (runs BEFORE Layer 1)
+    try:
+        await intent_middleware.before_tool_call("track_order", args, certificate_id, api_key)
+    except IntentDriftWarning:
+        pass  # Log warning but continue
 
     # Authenticate and authorize
     success, user_data, error_msg = authenticate_and_authorize(api_key, "track_order")
@@ -778,6 +856,13 @@ async def get_order_history(args: dict) -> list[TextContent]:
     """Get order history for a customer"""
     api_key = args.get("api_key", "")
     customer_email = args.get("customer_email", "")
+    certificate_id = args.get("certificate_id", "")
+
+    # Layer 0: Intent-based authorization (runs BEFORE Layer 1)
+    try:
+        await intent_middleware.before_tool_call("get_order_history", args, certificate_id, api_key)
+    except IntentDriftWarning:
+        pass  # Log warning but continue
 
     # Authenticate and authorize
     success, user_data, error_msg = authenticate_and_authorize(api_key, "get_order_history")
@@ -794,6 +879,9 @@ async def get_order_history(args: dict) -> list[TextContent]:
         return [TextContent(type="text", text=msg)]
 
     # SECURITY FIX: Ensure customers can only view their own history
+    # For non-admins, must match authenticated user's email
+    # For admins, can query any customer in their company
+    target_customer_id = None
     if user_data['role'] != security_manager.ROLE_ADMIN:
         if customer_email.lower() != user_data['email'].lower():
             result = "Access denied: You can only view your own order history."
@@ -801,11 +889,24 @@ async def get_order_history(args: dict) -> list[TextContent]:
                 "get_order_history", user_data['email'], user_data['role'], result
             )
             return [TextContent(type="text", text=result)]
+        # Non-admin: use their own customer_id
+        target_customer_id = user_data['customer_id']
+    else:
+        # Admin: look up the customer_id for the requested email in their company
+        target_customer = db.get_customer_by_email(user_data['company_id'], customer_email)
+        if not target_customer:
+            result = f"Customer {customer_email} not found in your company"
+            audit_logger.log_tool_call(
+                "get_order_history", user_data['company_id'],
+                user_data['email'], user_data['role'],
+                args, True, result
+            )
+            return [TextContent(type="text", text=result)]
+        target_customer_id = target_customer['customer_id']
 
     try:
-        # Get customer orders for the user's company
-        # (Global customers will be handled by a change in db.get_customer_orders later or by checking all companies)
-        orders = db.get_customer_orders(user_data['company_id'], customer_email)
+        # Get customer orders using customer_id (prevents email-based cross-tenant leakage)
+        orders = db.get_customer_orders(target_customer_id, user_data['company_id'])
 
         if not orders:
             result = f"No orders found for {customer_email}"
@@ -861,6 +962,13 @@ async def add_product(args: dict) -> list[TextContent]:
     price = args.get("price")
     stock = args.get("stock")
     description = args.get("description", "")
+    certificate_id = args.get("certificate_id", "")
+
+    # Layer 0: Intent-based authorization (runs BEFORE Layer 1)
+    try:
+        await intent_middleware.before_tool_call("add_product", args, certificate_id, api_key)
+    except IntentDriftWarning:
+        pass  # Log warning but continue
 
     # Authenticate and authorize
     success, user_data, error_msg = authenticate_and_authorize(api_key, "add_product")
@@ -929,6 +1037,13 @@ async def update_inventory(args: dict) -> list[TextContent]:
     api_key = args.get("api_key", "")
     product_id = args.get("product_id")
     new_stock = args.get("new_stock")
+    certificate_id = args.get("certificate_id", "")
+
+    # Layer 0: Intent-based authorization (runs BEFORE Layer 1)
+    try:
+        await intent_middleware.before_tool_call("update_inventory", args, certificate_id, api_key)
+    except IntentDriftWarning:
+        pass  # Log warning but continue
 
     # Authenticate and authorize
     success, user_data, error_msg = authenticate_and_authorize(api_key, "update_inventory")
@@ -1011,6 +1126,13 @@ async def view_all_orders(args: dict) -> list[TextContent]:
     """View all orders for company (admin only)"""
     api_key = args.get("api_key", "")
     status = args.get("status")
+    certificate_id = args.get("certificate_id", "")
+
+    # Layer 0: Intent-based authorization (runs BEFORE Layer 1)
+    try:
+        await intent_middleware.before_tool_call("view_all_orders", args, certificate_id, api_key)
+    except IntentDriftWarning:
+        pass  # Log warning but continue
 
     # Authenticate and authorize
     success, user_data, error_msg = authenticate_and_authorize(api_key, "view_all_orders")
@@ -1085,6 +1207,13 @@ async def update_order_status(args: dict) -> list[TextContent]:
     api_key = args.get("api_key", "")
     order_id = args.get("order_id")
     new_status = args.get("new_status", "")
+    certificate_id = args.get("certificate_id", "")
+
+    # Layer 0: Intent-based authorization (runs BEFORE Layer 1)
+    try:
+        await intent_middleware.before_tool_call("update_order_status", args, certificate_id, api_key)
+    except IntentDriftWarning:
+        pass  # Log warning but continue
 
     # Authenticate and authorize
     success, user_data, error_msg = authenticate_and_authorize(api_key, "update_order_status")
@@ -1167,6 +1296,13 @@ New Status: {new_status.upper()}
 async def sales_summary(args: dict) -> list[TextContent]:
     """Get sales summary (admin only)"""
     api_key = args.get("api_key", "")
+    certificate_id = args.get("certificate_id", "")
+
+    # Layer 0: Intent-based authorization (runs BEFORE Layer 1)
+    try:
+        await intent_middleware.before_tool_call("sales_summary", args, certificate_id, api_key)
+    except IntentDriftWarning:
+        pass  # Log warning but continue
 
     # Authenticate and authorize
     success, user_data, error_msg = authenticate_and_authorize(api_key, "sales_summary")
@@ -1240,6 +1376,13 @@ async def rotate_api_key(args: dict) -> list[TextContent]:
     """Rotate API key for a customer (admin only)"""
     api_key = args.get("api_key", "")
     customer_email = args.get("customer_email", "")
+    certificate_id = args.get("certificate_id", "")
+
+    # Layer 0: Intent-based authorization (runs BEFORE Layer 1)
+    try:
+        await intent_middleware.before_tool_call("rotate_api_key", args, certificate_id, api_key)
+    except IntentDriftWarning:
+        pass  # Log warning but continue
 
     # Authenticate and authorize
     success, user_data, error_msg = authenticate_and_authorize(api_key, "rotate_api_key")
@@ -1345,6 +1488,13 @@ async def view_security_alerts(args: dict) -> list[TextContent]:
     """View security alerts for admin's company (admin only)"""
     api_key = args.get("api_key", "")
     limit = args.get("limit", 20)
+    certificate_id = args.get("certificate_id", "")
+
+    # Layer 0: Intent-based authorization (runs BEFORE Layer 1)
+    try:
+        await intent_middleware.before_tool_call("view_security_alerts", args, certificate_id, api_key)
+    except IntentDriftWarning:
+        pass  # Log warning but continue
 
     # Authenticate and authorize
     success, user_data, error_msg = authenticate_and_authorize(api_key, "view_security_alerts")
@@ -1356,7 +1506,17 @@ async def view_security_alerts(args: dict) -> list[TextContent]:
         if not isinstance(limit, int) or limit < 1 or limit > 100:
             limit = 20
 
-        # Get security alerts for company
+        # SECURITY: Ensure company_id is always provided for admins (prevent cross-tenant alert leakage)
+        if not user_data.get('company_id'):
+            error_msg = "Cannot retrieve security alerts: admin must have a company_id"
+            audit_logger.log_tool_call(
+                "view_security_alerts", None,
+                user_data['email'], user_data['role'],
+                args, False, None, error_msg
+            )
+            return [TextContent(type="text", text=error_msg)]
+
+        # Get security alerts for company only (strict company isolation)
         alerts = db.get_security_alerts(user_data['company_id'], limit)
 
         # Format results

@@ -295,8 +295,12 @@ class SecurityManager:
         if len(query_stripped) > self.MAX_SEARCH_LENGTH:
             return False, f"Search query cannot exceed {self.MAX_SEARCH_LENGTH} characters"
 
-        # Block dangerous SQL characters
-        dangerous_patterns = [';', '--', '/*', '*/', 'DROP', 'DELETE', 'UPDATE', 'INSERT']
+        # Block dangerous SQL characters and keywords (UNION-based injection protection)
+        dangerous_patterns = [
+            ';', '--', '/*', '*/',
+            'DROP', 'DELETE', 'UPDATE', 'INSERT',
+            'UNION', 'SELECT', 'HAVING', 'EXEC', 'EXECUTE', 'CAST', 'CONVERT'
+        ]
         for pattern in dangerous_patterns:
             if pattern in query.upper():
                 return False, "Search query contains invalid characters or SQL keywords"

@@ -13,11 +13,11 @@ def test_valid_customer_key_authenticates():
     db = Database(DB_PATH)
     security = SecurityManager()
 
-    success, user, msg = security.authenticate(db, "tz_cust1_key")
+    success, user, msg = security.authenticate(db, "techzone_sarah_key_2024")
 
     assert success is True
     assert user is not None
-    assert user['email'] == "alice@gmail.com"
+    assert user['email'] == "sarah.j@email.com"
     assert user['role'] == "customer"
     assert msg == ""
 
@@ -26,11 +26,11 @@ def test_valid_admin_key_authenticates():
     db = Database(DB_PATH)
     security = SecurityManager()
 
-    success, user, msg = security.authenticate(db, "tz_admin_secret_123")
+    success, user, msg = security.authenticate(db, "techzone_admin_key_2024")
 
     assert success is True
     assert user is not None
-    assert user['email'] == "admin@techzone.com"
+    assert user['email'] == "admin.emily@techzone.com"
     assert user['role'] == "admin"
 
 
@@ -38,11 +38,11 @@ def test_valid_global_customer_key_authenticates():
     db = Database(DB_PATH)
     security = SecurityManager()
 
-    success, user, msg = security.authenticate(db, "global_cust_key")
+    success, user, msg = security.authenticate(db, "global_shopper_key_2024")
 
     assert success is True
     assert user is not None
-    assert user['email'] == "global@world.com"
+    assert user['email'] == "global@shopper.com"
     assert user['role'] == "global_customer"
     assert user['company_id'] is None
 
@@ -113,7 +113,7 @@ def test_customer_id_alias_is_set():
     db = Database(DB_PATH)
     security = SecurityManager()
 
-    success, user, msg = security.authenticate(db, "tz_cust1_key")
+    success, user, msg = security.authenticate(db, "techzone_sarah_key_2024")
 
     assert success is True
     assert 'id' in user

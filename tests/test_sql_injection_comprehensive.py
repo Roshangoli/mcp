@@ -5,8 +5,7 @@ import os
 from database import Database
 from security import SecurityManager
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(SCRIPT_DIR, "ecommerce.db")
+DB_PATH = os.path.join(os.path.dirname(__file__), "..", "ecommerce.db")
 
 def test_sql_injection_vectors():
     """Test multiple SQL injection attack vectors"""

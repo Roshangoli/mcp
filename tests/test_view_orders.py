@@ -10,8 +10,8 @@ from security import SecurityManager
 # Use absolute path
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ecommerce.db")
 
-def test_view_orders(api_key: str):
-    """Simulate the view_orders MCP tool"""
+def view_orders_manual_test(api_key: str):
+    """Simulate the view_orders MCP tool (manual test, not pytest)"""
 
     print("=" * 80)
     print("TESTING VIEW_ORDERS TOOL")
@@ -143,6 +143,6 @@ if __name__ == "__main__":
         print()
         print(f"TESTING: {description}")
         print()
-        test_view_orders(api_key)
+        view_orders_manual_test(api_key)
         print()
         print()

@@ -20,7 +20,7 @@ def test_customer_rate_limit_allows_10_requests():
     conn.close()
 
     # Authenticate to get user data
-    success, user, msg = security.authenticate(db, "tz_cust1_key")
+    success, user, msg = security.authenticate(db, "techzone_sarah_key_2024")
     assert success is True
 
     # First 10 calls should succeed
@@ -72,7 +72,7 @@ def test_admin_rate_limit_allows_5_requests():
     conn.close()
 
     # Authenticate admin
-    success, user, msg = security.authenticate(db, "tz_admin_secret_123")
+    success, user, msg = security.authenticate(db, "techzone_admin_key_2024")
     assert success is True
 
     # First 5 calls should succeed
@@ -124,7 +124,7 @@ def test_different_users_have_independent_rate_limits():
     conn.close()
 
     # User 1
-    success1, user1, msg1 = security.authenticate(db, "tz_cust1_key")
+    success1, user1, msg1 = security.authenticate(db, "techzone_sarah_key_2024")
     assert success1 is True
 
     # User 2
@@ -187,7 +187,7 @@ def test_global_customer_has_customer_rate_limit():
     conn.close()
 
     # Authenticate global customer
-    success, user, msg = security.authenticate(db, "global_cust_key")
+    success, user, msg = security.authenticate(db, "global_shopper_key_2024")
     assert success is True
     assert user['role'] == "global_customer"
 

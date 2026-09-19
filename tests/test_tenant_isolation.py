@@ -12,7 +12,8 @@ def test_techzone_admin_cannot_see_sportspro_products():
     db = Database(DB_PATH)
 
     # TechZone is company_id=1, SportsPro is company_id=2
-    product = db.get_product_by_id(product_id=3, company_id=1)  # SportsPro product with TechZone filter
+    # Product ID 21 is a SportsPro product, try to access it with TechZone filter
+    product = db.get_product_by_id(product_id=21, company_id=1)
 
     assert product is None, "TechZone admin should not see SportsPro products"
 
@@ -20,17 +21,17 @@ def test_techzone_admin_cannot_see_sportspro_products():
 def test_techzone_admin_cannot_update_sportspro_inventory():
     db = Database(DB_PATH)
 
-    # First verify the product exists in SportsPro
-    sportspro_product = db.get_product_by_id(product_id=3, company_id=2)
+    # First verify the product exists in SportsPro (product_id 21 is SportsPro)
+    sportspro_product = db.get_product_by_id(product_id=21, company_id=2)
     assert sportspro_product is not None, "SportsPro product should exist"
 
-    # Try to update SportsPro product (ID 3) with TechZone company_id
+    # Try to update SportsPro product (ID 21) with TechZone company_id
     # This should affect 0 rows due to company_id mismatch
     conn = db.get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """UPDATE products SET stock = ? WHERE product_id = ? AND company_id = ?""",
-        (999, 3, 1)
+        (999, 21, 1)
     )
     rows_affected = cursor.rowcount
     conn.commit()
